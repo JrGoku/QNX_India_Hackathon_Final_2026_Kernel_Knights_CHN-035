@@ -1,0 +1,27 @@
+# build output
+build/
+*.o
+*.d
+
+# run-time data on the Pi
+logs/
+traces/
+*.kev
+*.ckpt
+tools/logs/
+*.bmp
+
+# secrets: the shared provisioning key
+tools/prov_key.txt
+prov_key.txt
+firmware/**/secrets.h
+
+# Python / editors / IDE
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.settings/
+.metadata/
+*.swp
+.DS_Store

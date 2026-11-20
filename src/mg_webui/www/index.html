@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemoryGuard - machine monitor on QNX</title>
+<style>
+:root {
+  color-scheme: dark;
+  --page: #121211; --surface-1: #1a1a19; --surface-2: #222220; --border: #2e2e2b;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+  --series-1: #3987e5; --series-2: #d95926;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b; --idle: #6b6a65;
+  --grid: #2a2a27;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--page); color: var(--text-primary);
+  font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.num, .mono { font-family: ui-monospace, "SF Mono", Consolas, "Liberation Mono", monospace; font-variant-numeric: tabular-nums; }
+header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: var(--surface-1);
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+header .sub { color: var(--text-muted); font-size: 12px; }
+.spacer { flex: 1; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2); font-size: 12px; white-space: nowrap; }
+.chip .k { color: var(--text-muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.s-good { background: var(--good); } .s-warning { background: var(--warning); } .s-serious { background: var(--serious); }
+.s-critical { background: var(--critical); } .s-idle { background: var(--idle); } .s-info { background: var(--series-1); }
+.chip.big { font-size: 13px; padding: 4px 11px; font-weight: 600; }
+.pagetabs button { font-size: 13px; padding: 4px 12px; }
+body.p-live .page-metrics, body.p-metrics .page-live { display: none; }
+.page-metrics .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.page-metrics .metric .v { font-size: 30px; }
+.page-metrics .metric { padding: 14px 16px; }
+#warnbar { padding: 6px 16px; background: var(--surface-1); border-bottom: 1px solid var(--border); gap: 6px; margin: 0; }
+#linkbar { display: none; background: var(--critical); color: #fff; padding: 6px 16px; font-weight: 600; }
+#linkbar.on { display: block; }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 12px; padding: 12px; align-items: start; }
+.main { display: grid; gap: 12px; min-width: 0; }
+.row { display: grid; gap: 12px; min-width: 0; }
+.r-2-1 { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.r-1-1 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.r-1-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+.panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.panel h2 { font-size: 13px; margin: 0 0 2px; font-weight: 650; }
+.panel .desc { color: var(--text-muted); font-size: 11.5px; margin: 0 0 8px; }
+.panel-head { display: flex; align-items: baseline; gap: 8px; }
+.panel-head .spacer { flex: 1; }
+
+/* service tiles */
+.tiles { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
+.tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 7px 8px; min-width: 0;
+  border-top: 3px solid var(--idle); }
+.tile.t-good { border-top-color: var(--good); } .tile.t-warning { border-top-color: var(--warning); }
+.tile.t-serious { border-top-color: var(--serious); } .tile.t-critical { border-top-color: var(--critical); }
+.tile .name { font-weight: 650; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .role { color: var(--text-muted); font-size: 11px; }
+.tile .state { display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 12px; margin: 3px 0; }
+.tile dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 6px; margin: 4px 0 0; font-size: 11px; }
+.tile dt { color: var(--text-muted); } .tile dd { margin: 0; text-align: right; }
+.hbbar { height: 4px; background: var(--grid); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+.hbbar > i { display: block; height: 100%; background: var(--good); width: 0; }
+.tag { font-size: 10px; padding: 0 5px; border-radius: 4px; background: var(--grid); color: var(--text-secondary); }
+
+/* charts */
+.chart { position: relative; }
+.chart canvas { display: block; width: 100%; }
+.tip { position: absolute; pointer-events: none; background: #000d; border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; font-size: 11.5px; white-space: nowrap; display: none; z-index: 3; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--text-secondary); margin-top: 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sw { width: 12px; height: 8px; border-radius: 2px; display: inline-block; }
+
+/* machine readout */
+.hero { display: flex; align-items: baseline; gap: 8px; }
+.hero .v { font-size: 34px; font-weight: 650; }
+.hero .u { color: var(--text-secondary); }
+.zonebadge { font-weight: 700; padding: 2px 8px; border-radius: 5px; color: #111; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12px; margin-top: 8px; }
+.kv dt { color: var(--text-muted); } .kv dd { margin: 0; }
+.statusline { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+/* recovery */
+.stagebar { display: flex; height: 26px; border-radius: 4px; overflow: hidden; background: var(--grid); margin: 6px 0 4px; }
+.stagebar > div { height: 100%; border-right: 2px solid var(--surface-1); min-width: 3px; }
+.stagelegend { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; font-size: 11.5px; }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+th { text-align: left; color: var(--text-muted); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 3px 6px; border-bottom: 1px solid #242422; white-space: nowrap; }
+td.wrap { white-space: normal; }
+.scroll { max-height: 230px; overflow-y: auto; }
+.lv-0 { color: var(--text-secondary); } .lv-1 { color: var(--warning); } .lv-2 { color: var(--critical); }
+.pill { display: inline-flex; align-items: center; gap: 4px; }
+.tabs { display: flex; gap: 4px; }
+.tabs button { background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 5px;
+  padding: 2px 8px; font-size: 11.5px; cursor: pointer; }
+.tabs button.on { color: var(--text-primary); border-color: var(--series-1); }
+
+/* nodes */
+.nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.node { background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; }
+.node .top { display: flex; align-items: center; gap: 6px; }
+.node .src { color: var(--text-muted); font-size: 11px; margin: 2px 0 6px; }
+.node .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px 6px; font-size: 11px; }
+.node .grid div span { display: block; color: var(--text-muted); font-size: 10px; }
+.node .vals { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+
+/* metrics */
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.metric { background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; }
+.metric .l { color: var(--text-muted); font-size: 11px; }
+.metric .v { font-size: 19px; font-weight: 650; margin-top: 1px; }
+.metric .s { color: var(--text-secondary); font-size: 11px; }
+
+/* commands */
+.side { position: sticky; top: 60px; display: grid; gap: 12px; }
+.cmdgroup h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-muted); margin: 10px 0 5px; font-weight: 600; }
+.cmdgroup h3:first-child { margin-top: 0; }
+.btn { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: var(--surface-2);
+  color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 0 0 5px;
+  cursor: pointer; font: inherit; font-size: 12.5px; }
+.btn:hover { border-color: var(--series-1); }
+.btn:active { transform: translateY(1px); }
+.btn .n { flex: none; width: 20px; height: 20px; border-radius: 5px; background: var(--grid); display: inline-flex;
+  align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+.btn .h { color: var(--text-muted); font-size: 11px; display: block; }
+.btn.danger .n { background: #4a1d1d; color: #ffb4b4; }
+.btn.small { display: inline-flex; width: auto; margin: 0 4px 5px 0; padding: 4px 8px; font-size: 12px; }
+select, label.cb { background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; font: inherit; font-size: 12px; }
+label.cb { display: inline-flex; gap: 5px; align-items: center; border: none; background: none; padding: 0; color: var(--text-secondary); }
+.result { font-size: 12px; border-left: 3px solid var(--idle); padding: 5px 8px; background: var(--surface-2); border-radius: 4px; min-height: 30px; }
+.result.ok { border-left-color: var(--good); } .result.bad { border-left-color: var(--critical); }
+.hist { font-size: 11px; color: var(--text-muted); max-height: 120px; overflow-y: auto; margin-top: 6px; }
+.empty { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
+@media (max-width: 1500px) { .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } .r-2-1, .r-1-1, .r-1-2 { grid-template-columns: 1fr; } .side { position: static; } }
+</style>
+</head>
+<body class="p-live">
+<header>
+  <div>
+    <h1>MemoryGuard &mdash; machine condition monitor</h1>
+    <div class="sub">QNX Neutrino 8.0 on Raspberry Pi 4 &middot; fault containment &amp; recovery &middot; <span id="ver"></span></div>
+  </div>
+  <nav class="tabs pagetabs" id="pagetabs"><button data-p="live" class="on">Live</button><button data-p="metrics">Recovery metrics</button></nav>
+  <span class="spacer"></span>
+  <span class="chip big" id="c-mode"><span class="dot s-idle"></span><span class="k">System</span> <b>-</b></span>
+  <span class="chip big" id="c-machine"><span class="dot s-idle"></span><span class="k">Machine</span> <b>-</b></span>
+  <span class="chip" id="c-src"><span class="dot s-idle"></span><span class="k">Data source</span> <b>-</b></span>
+  <span class="chip"><span class="k">Uptime</span> <b class="num" id="c-up">-</b></span>
+  <span class="chip" id="c-link"><span class="dot s-idle"></span><b>connecting</b></span>
+</header>
+<div id="warnbar" class="statusline"></div>
+<div id="linkbar">Dashboard link lost &mdash; the web service is restarting or the network is down. Monitoring on the Pi is not affected. Reconnecting&hellip;</div>
+
+<div class="layout">
+<div class="main">
+
+  <section class="panel page-live">
+    <div class="panel-head"><h2>Processes</h2><span class="desc">separate QNX processes &middot; priority / core &middot; heartbeat age vs. detection limit &middot; availability &middot; PING latency</span></div>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <div class="row r-1-1 page-live">
+    <section class="panel">
+      <div class="panel-head"><h2>Node 1 &mdash; machine vibration, velocity RMS (mm/s)</h2><span class="spacer"></span><span class="desc" id="vib-src"></span></div>
+      <p class="desc">Last 2 minutes. Shaded bands are the ISO 10816-3 zones evaluated on the Pi; zone D for 2 frames trips the machine.</p>
+      <div class="chart" id="ch-vib"><canvas height="230"></canvas><div class="tip"></div></div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--series-1)"></i>Velocity RMS</span>
+        <span><i class="sw" style="background:#0ca30c55"></i>A good</span>
+        <span><i class="sw" style="background:#0ca30c22"></i>B acceptable</span>
+        <span><i class="sw" style="background:#fab21933"></i>C alert</span>
+        <span><i class="sw" style="background:#d03b3b40"></i>D danger</span>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Node 2 &mdash; environment temperature (&deg;C)</h2><span class="spacer"></span><span class="desc" id="env-src"></span></div>
+      <p class="desc">Last 2 minutes, recorded by this page since it was opened. Above the alarm limit for 2 frames raises OVER_TEMPERATURE.</p>
+      <div class="chart" id="ch-temp"><canvas height="230"></canvas><div class="tip"></div></div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--series-2)"></i>Temperature</span>
+        <span><i class="sw" style="background:var(--warning)"></i>warning limit</span>
+        <span><i class="sw" style="background:var(--critical)"></i>alarm limit</span>
+      </div>
+    </section>
+  </div>
+
+  <div class="row r-2-1 page-live">
+    <section class="panel">
+      <div class="panel-head"><h2>Process state timeline</h2><span class="spacer"></span>
+        <div class="tabs" id="tlwin"><button data-w="15000">15 s</button><button data-w="30000" class="on">30 s</button><button data-w="60000">60 s</button><button data-w="120000">2 min</button></div></div>
+      <p class="desc">Each lane is one process. A fault shows as RECOVERING &rarr; STARTING &rarr; VERIFYING &rarr; RUNNING while the critical lanes stay green.</p>
+      <div class="chart" id="ch-tl"><canvas height="210"></canvas><div class="tip"></div></div>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--good)"></i>RUNNING (verified)</span>
+        <span><i class="sw" style="background:var(--serious)"></i>RECOVERING (fault detected)</span>
+        <span><i class="sw" style="background:var(--series-1)"></i>STARTING (restoring checkpoint)</span>
+        <span><i class="sw" style="background:var(--warning)"></i>VERIFYING (health check)</span>
+        <span><i class="sw" style="background:var(--critical)"></i>FAILED / lost</span>
+        <span><i class="sw" style="background:var(--idle)"></i>STOPPED</span>
+        <span><i class="sw" style="background:#2e2e2b"></i>no data</span>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Last recovery</h2>
+      <p class="desc" id="rec-title">No recovery yet</p>
+      <div class="stagebar" id="rec-bar"></div>
+      <div class="stagelegend" id="rec-legend"></div>
+    </section>
+  </div>
+
+  <section class="panel page-metrics">
+    <div class="panel-head"><h2>Recovery metrics</h2><span class="desc">required by the problem statement &middot; all from shared memory written by the supervisor</span></div>
+    <div class="metrics" id="metrics"></div>
+  </section>
+
+  <div class="row r-1-1 page-live">
+    <section class="panel">
+      <div class="panel-head"><h2>Alarm log</h2><span class="spacer"></span><span class="desc" id="al-sum"></span></div>
+      <p class="desc">Machine alarms stored by the Device Manager (write-ahead checkpoint) and delivered exactly once to the maintenance centre.</p>
+      <div class="scroll"><table><thead><tr><th>#</th><th>Time</th><th>Alarm</th><th>Value</th><th>Node</th><th>Delivery</th></tr></thead><tbody id="al-body"></tbody></table>
+      <div class="empty" id="al-empty">No alarms since start.</div></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Event log</h2><span class="spacer"></span>
+        <div class="tabs" id="logtabs"><button data-f="all" class="on">All</button><button data-f="supervisor">Supervisor &amp; watchdog</button><button data-f="dm">Device Manager</button><button data-f="other">Services</button></div></div>
+      <p class="desc">Newest first. Warnings in amber, errors in red.</p>
+      <div class="scroll"><table><thead><tr><th>Time</th><th>Source</th><th>Message</th></tr></thead><tbody id="log-body"></tbody></table></div>
+    </section>
+  </div>
+
+  <div class="row r-1-1 page-live">
+    <section class="panel">
+      <h2>Checkpoints</h2>
+      <p class="desc">A/B slots with CRC32. Active = newest valid copy on disk; restore = what the last start actually loaded.</p>
+      <table><thead><tr><th>Service</th><th>Active slot</th><th>Counter</th><th>Age</th><th>Files</th><th>Last start restored</th></tr></thead><tbody id="ck-body"></tbody></table>
+    </section>
+    <section class="panel">
+      <h2>Recovery history</h2>
+      <p class="desc">Detection = fault &rarr; supervisor noticed. Total = fault &rarr; healthy and clients reconnected.</p>
+      <div class="scroll" style="max-height:190px"><table><thead><tr><th>#</th><th>Process</th><th>Cause</th><th>Detect</th><th>Total</th><th>Checkpoint</th><th>Misses</th></tr></thead><tbody id="rec-body"></tbody></table>
+      <div class="empty" id="rec-empty">No recoveries yet.</div></div>
+    </section>
+  </div>
+</div>
+
+<aside class="side">
+  <section class="panel cmdgroup">
+    <h2>Fault injection &amp; hacks</h2>
+    <p class="desc" id="cmd-who">Commands are accepted from the maintenance laptop and the Pi.</p>
+    <h3>Judges' hacks</h3>
+    <button class="btn danger" data-q="do=kill&svc=ui"><span class="n">1</span><span>Kill the User Interface<span class="h">non-critical process termination</span></span></button>
+    <button class="btn danger" data-q="do=invalid&svc=dm"><span class="n">2</span><span>Crash the Device Manager<span class="h">invalid diagnostic operation (poison request)</span></span></button>
+    <button class="btn danger" data-q="do=ckpt&svc=dm&op=corrupt&restart=1"><span class="n">3a</span><span>Corrupt DM checkpoint + restart<span class="h">falls back to the previous valid slot</span></span></button>
+    <button class="btn danger" data-q="do=ckpt&svc=dm&op=withhold&restart=1"><span class="n">3b</span><span>Withhold DM checkpoint + restart<span class="h">newest copy missing</span></span></button>
+    <button class="btn danger" data-q="do=ckpt&svc=dm&op=corrupt-both&restart=1"><span class="n">3c</span><span>No valid checkpoint + restart<span class="h">safe-init: DM starts RESTRICTED</span></span></button>
+    <button class="btn danger" data-q="do=stress"><span class="n">4</span><span>CPU load test (20 s)<span class="h">4 busy threads, priority 9, all cores</span></span></button>
+
+    <h3>Fault in one process</h3>
+    <div style="display:flex; gap:6px; margin-bottom:6px; align-items:center">
+      <select id="f-svc"></select>
+    </div>
+    <button class="btn small" data-f="kill">Kill</button><button class="btn small" data-f="segv">Crash (SEGV)</button><button class="btn small" data-f="hang">Hang</button><button class="btn small" data-f="leak">Memory leak</button><button class="btn small" data-f="restart">Restart</button>
+
+    <h3>Checkpoint tampering</h3>
+    <div style="display:flex; gap:8px; margin-bottom:6px; align-items:center">
+      <select id="k-svc"></select>
+      <label class="cb"><input type="checkbox" id="k-restart" checked> restart after</label>
+    </div>
+    <button class="btn small" data-k="corrupt">Corrupt newest</button><button class="btn small" data-k="withhold">Withhold</button><button class="btn small" data-k="corrupt-both">Corrupt both</button><button class="btn small" data-k="restore">Restore</button><button class="btn small" data-k="clear">Clear</button>
+
+    <h3>Supervisor &amp; watchdog</h3>
+    <button class="btn danger" data-q="do=supkill"><span class="n">S</span><span>Kill the supervisor<span class="h">watchdog takes over, services adopted</span></span></button>
+    <button class="btn danger" data-q="do=suphang"><span class="n">S</span><span>Hang the supervisor<span class="h">heartbeat loss detected by the watchdog</span></span></button>
+    <button class="btn danger" data-q="do=wdkill"><span class="n">W</span><span>Kill the watchdog<span class="h">supervisor restarts it</span></span></button>
+
+    <h3>Stretch goal</h3>
+    <button class="btn danger" data-q="do=multi"><span class="n">M</span><span>Multiple simultaneous failures<span class="h">UI + logger killed, DM invalid op</span></span></button>
+
+    <h3>Operator</h3>
+    <button class="btn" data-q="do=reset"><span class="n">R</span><span>Reset alarm / release trip<span class="h">refused while vibration is zone C or D</span></span></button>
+    <button class="btn" data-q="do=qclear"><span class="n">Q</span><span>Clear request quarantine</span></button>
+
+    <h3>Result</h3>
+    <div class="result" id="result">Ready.</div>
+    <div class="hist mono" id="hist"></div>
+  </section>
+</aside>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const C = {};
+["--good","--warning","--serious","--critical","--idle","--series-1","--series-2","--grid","--text-muted","--text-secondary","--surface-1","--surface-2","--border"]
+  .forEach(k => C[k.slice(2)] = css(k));
+const STATE_COLOR = { RUNNING: C.good, RECOVERING: C.serious, STARTING: C["series-1"], VERIFYING: C.warning, FAILED: C.critical, STOPPED: C.idle };
+const STATE_CLASS = { RUNNING: "good", RECOVERING: "serious", STARTING: "info", VERIFYING: "warning", FAILED: "critical", STOPPED: "idle" };
+const ROLE = { sensor: "critical · node data", dm: "critical · machine control", logger: "data logger",
+               ui: "non-critical", statusfs: "resource manager", webui: "this dashboard" };
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fx = (v, d = 1) => v == null || !isFinite(v) ? "-" : Number(v).toFixed(d);
+const ms = (v) => v == null || v < 0 ? "-" : v >= 10000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms";
+const ago = (msv) => msv < 0 ? "-" : msv < 1000 ? "now" : msv < 60000 ? Math.round(msv / 1000) + " s ago" : Math.round(msv / 60000) + " min ago";
+
+/* ---------- client-side history ---------- */
+const WINDOW = 120000;    // charts: 2 minutes kept
+let TL_WIN = 30000;       // process timeline: shorter, so a 0.6 s recovery is visible
+const tl = [];            // {t, st: {key: state}}
+const tempHist = [];      // [t, temp]
+const logSeen = new Map();
+const alarmSeen = new Map();
+let last = null, linkOk = false, firstData = true, logFilter = "all";
+let clockOff = 0;                 // Date.now() - Pi monotonic ms
+const recHist = new Map();        // recoveries kept by id (the server sends the last 12)
+const supHist = new Map();        // supervisor takeovers
+
+/* ---------- canvas helpers ---------- */
+function setupCanvas(el) {
+  const cv = el.querySelector("canvas");
+  const w = el.clientWidth, h = +cv.getAttribute("height");
+  const r = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(w * r)) { cv.width = Math.round(w * r); cv.height = Math.round(h * r); cv.style.height = h + "px"; }
+  const g = cv.getContext("2d");
+  g.setTransform(r, 0, 0, r, 0, 0);
+  g.clearRect(0, 0, w, h);
+  g.font = "11px system-ui, sans-serif";
+  return { g, w, h };
+}
+function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; }
+function ticks(max, n = 5) { const st = niceMax(max / n - 1e-9); const t = []; for (let v = 0; v <= max + 1e-9; v += st) t.push(+v.toFixed(6)); return t; }
+
+function timeAxis(g, x0, x1, yb, win = WINDOW) {
+  g.fillStyle = C["text-muted"]; g.textAlign = "center"; g.textBaseline = "top";
+  const span = win / 1000, step = span / 6;
+  for (let s = span; s >= 0; s -= step) {
+    const x = x1 - (s * 1000 / win) * (x1 - x0);
+    g.textAlign = s < 0.01 ? "right" : s > span - 0.01 ? "left" : "center";   // ends kept clear of the y labels
+    g.fillText(s < 0.01 ? "now" : "-" + Math.round(s) + " s", x, yb + 4);
+  }
+}
+
+/* vibration chart: series from the EDR ring (server side), ISO bands */
+function drawVib(d) {
+  const el = $("ch-vib"), { g, w, h } = setupCanvas(el);
+  const L = 44, R = 76, T = 8, B = 22, x0 = L, x1 = w - R, y0 = T, yb = h - B;
+  const m = d.machine, pts = d.edr.filter(p => p[1] != null);
+  const zab = m.zone_ab, zbc = m.zone_bc, zcd = m.zone_cd;
+  // y-axis: fits the data, but never more than 2x the zone D limit - one 280 mm/s shake would
+  // otherwise squash zones A-C into a few pixels; values above are drawn on the top edge in red
+  const cap = zcd * 2, top = Math.max(0, ...pts.map(p => p[1]));
+  let vmax = Math.min(Math.max(zcd * 1.3, top * 1.05), cap);
+  const vstep = niceMax(vmax / 5); vmax = Math.ceil(vmax / vstep) * vstep;
+  const Y = (v) => yb - (Math.min(v, vmax) / vmax) * (yb - y0);
+  const X = (t) => x1 + (t / WINDOW) * (x1 - x0);
+  const bands = [[0, zab, "#0ca30c40", "A good"], [zab, zbc, "#0ca30c1c", "B acceptable"], [zbc, zcd, "#fab2192e", "C alert"], [zcd, vmax, "#d03b3b38", "D danger"]];
+  for (const [a, b, col, lab] of bands) {
+    if (a >= vmax) continue;
+    g.fillStyle = col; g.fillRect(x0, Y(b), x1 - x0, Y(a) - Y(b));
+    g.fillStyle = C["text-secondary"]; g.textAlign = "left"; g.textBaseline = "middle";
+    const yy = (Y(a) + Y(Math.min(b, vmax))) / 2;
+    if (Y(a) - Y(Math.min(b, vmax)) > 11) g.fillText(lab, x1 + 6, yy);
+  }
+  g.strokeStyle = C.grid; g.lineWidth = 1; g.fillStyle = C["text-muted"]; g.textAlign = "right"; g.textBaseline = "middle";
+  for (const t of ticks(vmax)) { const y = Math.round(Y(t)) + .5; g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke(); g.fillText(fx(t, t < 10 ? 1 : 0), x0 - 6, y); }
+  g.save(); g.translate(11, (y0 + yb) / 2); g.rotate(-Math.PI / 2); g.textAlign = "center"; g.fillText("mm/s RMS", 0, 0); g.restore();
+  timeAxis(g, x0, x1, yb);
+  if (!pts.length) {
+    g.fillStyle = C["text-muted"]; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(m.node < 0 ? "No vibration node alive — machine protection inactive" : "Waiting for data", (x0 + x1) / 2, (y0 + yb) / 2);
+  } else {
+    g.strokeStyle = C["series-1"]; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+    let prev = null;
+    for (const p of pts) {
+      const x = X(p[0]), y = Y(p[1]);
+      if (x < x0) { prev = p; continue; }
+      if (!prev || p[0] - prev[0] > 2500) g.moveTo(x, y); else g.lineTo(x, y);  // gap when the node was silent
+      prev = p;
+    }
+    g.stroke();
+    // off-scale stretches: red on the top edge, the peak of each stretch labelled
+    let run = null; const runs = [];
+    for (const p of pts) {
+      if (X(p[0]) < x0) continue;
+      if (p[1] > vmax) { if (!run || p[0] - run.b > 1200) runs.push(run = { a: p[0], b: p[0], pk: p[1], t: p[0] }); else { run.b = p[0]; if (p[1] > run.pk) { run.pk = p[1]; run.t = p[0]; } } }
+    }
+    g.fillStyle = C.critical; g.textAlign = "center"; g.textBaseline = "top";
+    let lastLab = -1e9;
+    for (const r of runs) {
+      const xa = X(r.a) - 2, xb = X(r.b) + 2;
+      g.fillRect(xa, y0, Math.max(4, xb - xa), 3);
+      const xt = X(r.t);
+      g.beginPath(); g.moveTo(xt - 4, y0 + 10); g.lineTo(xt + 4, y0 + 10); g.lineTo(xt, y0 + 4); g.fill();
+      if (xt - lastLab > 46) {
+        const lab = fx(r.pk, 0) + " ▲", tw = g.measureText(lab).width + 8, xc = Math.min(x1 - tw / 2, Math.max(x0 + tw / 2, xt));
+        g.fillStyle = C["surface-1"]; g.fillRect(xc - tw / 2, y0 + 12, tw, 15);
+        g.fillStyle = C.critical; g.fillText(lab, xc, y0 + 13); lastLab = xt;
+      }
+    }
+    if (runs.length) { g.fillStyle = C["text-secondary"]; g.textAlign = "left"; g.fillText("▲ off scale", x1 + 6, y0); }
+    const lp = pts[pts.length - 1];
+    g.fillStyle = C["series-1"]; g.beginPath(); g.arc(X(lp[0]), Y(lp[1]), 4, 0, 7); g.fill();
+    g.strokeStyle = C["surface-1"]; g.lineWidth = 2; g.stroke();
+  }
+  el._hover = { x0, x1, y0, yb, find(mx) {
+    if (!pts.length) return null;
+    const t = (mx - x1) / (x1 - x0) * WINDOW;
+    let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
+    return { x: X(best[0]), y: Y(best[1]), html: `<b>${fx(best[1], 2)} mm/s</b> &middot; zone ${"ABCD"[best[3]] ?? "?"}<br><span style="color:${C["text-muted"]}">${fx(-best[0] / 1000, 1)} s ago</span>` };
+  } };
+}
+
+function drawTemp(d) {
+  const el = $("ch-temp"), { g, w, h } = setupCanvas(el);
+  const L = 36, R = 10, T = 8, B = 22, x0 = L, x1 = w - R, y0 = T, yb = h - B;
+  const now = Date.now(), pts = tempHist.filter(p => now - p[0] <= WINDOW);
+  const warn = d.machine.temp_warn, max = d.machine.temp_max;
+  const vals = pts.map(p => p[1]);
+  let lo = Math.min(...vals, warn) - 2, hi = Math.max(...vals, max) + 2;
+  lo = Math.floor(lo / 5) * 5; hi = Math.ceil(hi / 5) * 5;
+  const Y = (v) => yb - (v - lo) / (hi - lo) * (yb - y0);
+  const X = (t) => x1 - ((now - t) / WINDOW) * (x1 - x0);
+  g.strokeStyle = C.grid; g.lineWidth = 1; g.fillStyle = C["text-muted"]; g.textAlign = "right"; g.textBaseline = "middle";
+  for (let v = lo; v <= hi; v += (hi - lo) > 30 ? 10 : 5) { const y = Math.round(Y(v)) + .5; g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke(); g.fillText(v, x0 - 6, y); }
+  // the two limit lines: labels on the right, the warn label below its line if the two are close
+  const close = Math.abs(Y(warn) - Y(max)) < 14;
+  for (const [v, col, lab, below] of [[warn, C.warning, "warn " + fx(warn, 0), close], [max, C.critical, "alarm " + fx(max, 0), false]]) {
+    g.setLineDash([5, 4]); g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x0, Y(v)); g.lineTo(x1, Y(v)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = C["text-secondary"]; g.textAlign = "right"; g.textBaseline = below ? "top" : "bottom"; g.fillText(lab + " °C", x1 - 4, Y(v) + (below ? 2 : -2));
+  }
+  timeAxis(g, x0, x1, yb);
+  if (!pts.length) {
+    g.fillStyle = C["text-muted"]; g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(d.machine.env_node < 0 ? "No environment node alive" : "Collecting…", (x0 + x1) / 2, (y0 + yb) / 2);
+  } else {
+    g.strokeStyle = C["series-2"]; g.lineWidth = 2; g.beginPath();
+    let prev = null;
+    for (const p of pts) { const x = X(p[0]), y = Y(p[1]); if (!prev || p[0] - prev[0] > 3000) g.moveTo(x, y); else g.lineTo(x, y); prev = p; }
+    g.stroke();
+  }
+  el._hover = { x0, x1, y0, yb, find(mx) {
+    if (!pts.length) return null;
+    const t = now - (x1 - mx) / (x1 - x0) * WINDOW;
+    let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
+    return { x: X(best[0]), y: Y(best[1]), html: `<b>${fx(best[1], 1)} °C</b><br><span style="color:${C["text-muted"]}">${fx((now - best[0]) / 1000, 0)} s ago</span>` };
+  } };
+}
+
+/* process state timeline (sampled by this page every poll) */
+const LANES = () => [{ key: "supervisor", label: "Supervisor" }, { key: "watchdog", label: "Watchdog" },
+  ...(last ? last.svc.map(s => ({ key: s.key, label: s.title })) : [])];
+function drawTimeline() {
+  const el = $("ch-tl"), { g, w, h } = setupCanvas(el);
+  const lanes = LANES(), L = 128, R = 10, T = 4, B = 22, x0 = L, x1 = w - R, yb = h - B;
+  const lh = (yb - T) / lanes.length, now = Date.now();
+  const X = (t) => x1 - ((now - t) / TL_WIN) * (x1 - x0);
+  lanes.forEach((ln, i) => {
+    const y = T + i * lh;
+    g.fillStyle = C["text-secondary"]; g.textAlign = "right"; g.textBaseline = "middle";
+    g.fillText(ln.label, x0 - 8, y + lh / 2);
+    g.fillStyle = "#2e2e2b"; g.fillRect(x0, y + 3, x1 - x0, lh - 6);
+    for (let k = 0; k < tl.length; ) {           // merge equal samples into runs
+      const st = tl[k].st[ln.key]; let j = k + 1;
+      while (j < tl.length && tl[j].st[ln.key] === st) j++;
+      if (st) {
+        const xa = Math.max(x0, Math.round(X(tl[k].t))), xb = j < tl.length ? Math.round(X(tl[j].t)) : x1;
+        if (xb >= x0) { g.fillStyle = STATE_COLOR[st] || C.idle; g.fillRect(xa, y + 3, Math.max(st === "RUNNING" ? 2 : 4, xb - xa), lh - 6); }
+      }
+      k = j;
+    }
+  });
+  // exact recovery stages from the supervisor's timestamps (the 2 Hz sampling above would miss them)
+  if (last) {
+    const off = clockOff, idx = Object.fromEntries(lanes.map((l, i) => [l.key, i]));
+    const seg = (key, a, b, col) => {
+      if (!a || !b || b < a || idx[key] == null) return;
+      const xa = X(a + off), xb = X(b + off); if (xb < x0) return;
+      g.fillStyle = col; g.fillRect(Math.max(x0, Math.round(xa)), T + idx[key] * lh + 3, Math.max(4, Math.round(xb - Math.max(x0, xa))), lh - 6);
+    };
+    for (const r of recHist.values()) {
+      const f = r.t0 || r.fail;
+      seg(r.svc, f, r.spawn || r.detect || f + 2, C.serious);
+      seg(r.svc, r.spawn, r.ready, C["series-1"]);
+      seg(r.svc, r.ready, r.healthy, C.warning);
+    }
+    for (const s of supHist.values()) seg("supervisor", s.fail, s.fail + s.ms, C.critical);
+  }
+  timeAxis(g, x0, x1, yb, TL_WIN);
+  el._hover = { x0, x1, y0: T, yb, find(mx, my) {
+    const i = Math.floor((my - T) / lh); if (i < 0 || i >= lanes.length) return null;
+    const t = now - (x1 - mx) / (x1 - x0) * TL_WIN;
+    let s = null; for (const a of tl) { if (a.t <= t) s = a; else break; }
+    if (!s || !s.st[lanes[i].key]) return null;
+    return { x: mx, y: T + i * lh + lh / 2, html: `<b>${esc(lanes[i].label)}</b>: ${s.st[lanes[i].key]}<br><span style="color:${C["text-muted"]}">${fx((now - t) / 1000, 1)} s ago</span>` };
+  } };
+}
+
+function hoverable(el) {
+  const tip = el.querySelector(".tip");
+  el.addEventListener("mousemove", (ev) => {
+    const r = el.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top, hv = el._hover;
+    const f = hv && mx >= hv.x0 && mx <= hv.x1 ? hv.find(mx, my) : null;
+    if (!f) { tip.style.display = "none"; return; }
+    tip.innerHTML = f.html; tip.style.display = "block";
+    const tw = tip.offsetWidth;
+    tip.style.left = Math.min(el.clientWidth - tw - 4, Math.max(0, f.x + 12)) + "px";
+    tip.style.top = Math.max(0, f.y - 40) + "px";
+  });
+  el.addEventListener("mouseleave", () => tip.style.display = "none");
+}
+["ch-vib", "ch-temp", "ch-tl"].forEach(id => hoverable($(id)));
+
+/* ---------- panels ---------- */
+function chip(id, cls, label, value) { $(id).innerHTML = `<span class="dot s-${cls}"></span><span class="k">${label}</span> <b>${esc(value)}</b>`; }
+
+function renderHeader(d) {
+  $("ver").textContent = "v" + d.v;
+  const m = d.dm.mode, cls = d.safe ? "critical" : { NORMAL: "good", DEGRADED: "warning", ALERT: "warning", SAFE: "critical", BOOT: "idle" }[m] || "idle";
+  chip("c-mode", cls, "System", d.safe ? "SAFE STATE" : m + (d.dm.restricted ? " · RESTRICTED" : ""));
+  if (d.dm.tripped) chip("c-machine", "critical", "Machine", "TRIPPED (stopped)");
+  else if (d.machine.node < 0) chip("c-machine", "idle", "Machine", "no vibration node");
+  else chip("c-machine", d.machine.running ? "good" : "idle", "Machine", d.machine.running ? "RUNNING" : "IDLE");
+  const vias = new Set(d.nodes.filter(n => n.alive).map(n => n.via));
+  let src = "no nodes", sc = "idle";
+  if (vias.size === 1 && vias.has("node_sim (laptop)")) { src = "node_sim on " + (d.laptop || "laptop"); sc = "info"; }
+  else if (vias.size === 1 && vias.has("Wi-Fi node")) { src = "real Wi-Fi nodes"; sc = "good"; }
+  else if (vias.size > 1) { src = "mixed (sim + real)"; sc = "warning"; }
+  chip("c-src", sc, "Data source", src);
+  const s = Math.floor(d.uptime_ms / 1000);
+  $("c-up").textContent = `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function tileHTML(o) {
+  const pct = o.limit > 0 && o.age >= 0 ? Math.min(100, 100 * o.age / o.limit) : 0;
+  const bar = pct > 80 ? C.critical : pct > 50 ? C.warning : C.good;
+  return `<div class="tile t-${o.cls}">
+    <div class="name" title="${esc(o.name)}">${esc(o.name)}</div>
+    <div class="role">${esc(o.role)}</div>
+    <div class="state"><span class="dot s-${o.cls}"></span>${esc(o.state)}${o.tag ? ` <span class="tag">${esc(o.tag)}</span>` : ""}</div>
+    <div class="hbbar" title="heartbeat age ${o.age} ms of ${o.limit} ms"><i style="width:${pct}%;background:${bar}"></i></div>
+    <dl>${o.rows.map(([k, v]) => `<dt>${k}</dt><dd class="num">${esc(v)}</dd>`).join("")}</dl></div>`;
+}
+function renderTiles(d) {
+  const t = [];
+  const supOk = d.sup.hb_age >= 0 && d.sup.hb_age < 300;
+  t.push(tileHTML({ name: "Supervisor", role: "recovery manager · prio 63 core 1", state: supOk ? "RUNNING" : "SILENT",
+    cls: supOk ? "good" : "critical", age: d.sup.hb_age, limit: 300,
+    rows: [["PID", d.sup.pid], ["HB age", ms(d.sup.hb_age)], ["Takeovers", d.sup.restarts], ["Last", d.sup.restarts ? ms(d.sup.takeover_ms) : "-"]] }));
+  const wdOk = d.wd.hb_age >= 0 && d.wd.hb_age < 500;
+  t.push(tileHTML({ name: "Watchdog", role: "watches supervisor · prio 62 core 0", state: wdOk ? "RUNNING" : "SILENT",
+    cls: wdOk ? "good" : "critical", age: d.wd.hb_age, limit: 500,
+    rows: [["PID", d.wd.pid], ["HB age", ms(d.wd.hb_age)], ["Restarts", d.wd.restarts], ["Watches", "supervisor"]] }));
+  for (const s of d.svc) {
+    t.push(tileHTML({ name: s.title, role: `${ROLE[s.key] || ""} · prio ${s.prio} core ${s.cpu}`, state: s.state,
+      cls: STATE_CLASS[s.state] === "info" ? "warning" : STATE_CLASS[s.state] || "idle", age: s.hb_age, limit: s.hb_limit,
+      tag: s.adopted ? "adopted" : "",
+      rows: [["PID", s.pid], ["HB age", ms(s.hb_age)], ["Restarts", s.restarts + (s.failed ? ` (${s.failed} failed)` : "")],
+             ["Avail.", s.avail == null ? "-" : fx(s.avail, 2) + " %"], ["Latency", s.lat_ms ? fx(s.lat_ms, 2) + " ms" : "-"],
+             ...(s.key === "dm" ? [["Clients", s.clients]] : [])] }));
+  }
+  $("tiles").innerHTML = t.join("");
+}
+
+const ZCOL = { A: C.good, B: "#7bc47b", C: C.warning, D: C.critical };
+function renderStatus(d) {
+  const m = d.machine;
+  $("vib-src").textContent = m.node < 0 ? "no vibration node alive" : `node ${m.node} \u00b7 ${fx(m.vel, 2)} mm/s now, zone ${m.zone}`;
+  $("env-src").textContent = m.env_node < 0 ? "no environment node alive" : `node ${m.env_node} \u00b7 ${fx(m.env_temp, 1)} \u00b0C now`;
+  const w = [];
+  if (d.dm.tripped) w.push(["critical", "MACHINE TRIPPED"]);
+  if (d.dm.latched) w.push(["warning", "Alarm latched #" + d.dm.latched_id]);
+  if (d.dm.restricted) w.push(["critical", "RESTRICTED (safe-init)"]);
+  if (d.safe) w.push(["critical", "SYSTEM SAFE STATE (critical service FAILED)"]);
+  if (m.warnings && m.warnings !== "none" && m.warnings !== "-") m.warnings.split(/[ ,]+/).filter(Boolean).forEach(x => w.push(["warning", x]));
+  if (d.stress > 0) w.push(["serious", `CPU load test ${Math.ceil(d.stress / 1000)} s`]);
+  if (d.quar.length) w.push(["serious", d.quar.length + " request(s) quarantined"]);
+  if (!m.dm_link) w.push(["warning", "Sensor \u2192 Device Manager link DOWN"]);
+  w.push(["idle", `critical loop: ${m.misses} deadline misses, max late ${fx(m.max_late, 2)} ms`]);
+  if (w.length === 1) w.unshift(["good", "No warnings"]);
+  $("warnbar").innerHTML = w.map(([c, t]) => `<span class="chip"><span class="dot s-${c}"></span>${esc(t)}</span>`).join("");
+}
+
+const STAGES = [["Detect", "fail", "detect", C.critical, "fault → supervisor noticed"],
+  ["Restart", "detect", "spawn", C.serious, "new process created"],
+  ["Restore", "spawn", "ready", C["series-1"], "checkpoint loaded, READY"],
+  ["Verify", "ready", "healthy", C.warning, "heartbeats + PING"],
+  ["Reconnect", "healthy", "reconnect", C.good, "clients reconnected"]];
+function recDur(r, a, b) { const A = a === "fail" ? (r.t0 || r.fail) : r[a]; return A && r[b] && r[b] >= A ? r[b] - A : null; }
+const CKS = ["newest", "fallback", "safe-init"];
+function renderRecovery(d) {
+  const recs = d.rec;
+  if (!recs.length) { $("rec-empty").style.display = "block"; $("rec-body").innerHTML = ""; return; }
+  $("rec-empty").style.display = "none";
+  const r = recs[recs.length - 1];
+  const durs = STAGES.map(s => recDur(r, s[1], s[2]));
+  const total = durs.reduce((a, b) => a + (b || 0), 0);
+  $("rec-title").innerHTML = `#${r.id} <b>${esc(r.svc)}</b> &middot; ${esc(r.cause)} &middot; ${ago(r.ago_ms)}` +
+    (r.complete ? ` &middot; total <b class="num">${ms(total)}</b>` : ` &middot; <b style="color:${C.warning}">in progress</b>`);
+  $("rec-bar").innerHTML = STAGES.map((s, i) => durs[i] == null ? "" :
+    `<div title="${s[0]} ${ms(durs[i])}" style="flex:${Math.max(durs[i], total * 0.02)};background:${s[3]}"></div>`).join("");
+  $("rec-legend").innerHTML = STAGES.map((s, i) =>
+    `<span class="pill"><i class="sw" style="background:${s[3]}"></i>${s[0]}</span><span style="color:${C["text-muted"]}">${s[4]}</span><span class="num">${durs[i] == null ? "-" : ms(durs[i])}</span>`).join("") +
+    `<span>Checkpoint</span><span style="color:${C["text-muted"]}">expected #${r.ck_exp} restored #${r.ck_res}</span><span>${r.ck < 0 ? "n/a" : CKS[r.ck]}</span>`;
+  $("rec-body").innerHTML = recs.slice().reverse().map(r => {
+    const det = recDur(r, "fail", "detect");
+    const end = r.reconnect || r.healthy; const tot = r.complete && end ? end - (r.t0 || r.fail) : null;
+    const ck = r.ck < 0 ? "n/a" : CKS[r.ck];
+    const ckc = r.ck === 0 ? "good" : r.ck === 1 ? "warning" : r.ck === 2 ? "critical" : "idle";
+    return `<tr><td class="num">${r.id}</td><td>${esc(r.svc)}</td><td>${esc(r.cause)}</td><td class="num">${ms(det)}</td>
+      <td class="num">${!r.complete ? "running" : r.healthy ? ms(tot) : "not restarted (FAILED)"}</td><td><span class="pill"><span class="dot s-${ckc}"></span>${ck}</span></td><td class="num">${r.miss}</td></tr>`;
+  }).join("");
+}
+
+function renderMetrics(d) {
+  const done = d.rec.filter(r => r.complete);
+  const det = done.map(r => recDur(r, "fail", "detect")).filter(v => v != null);
+  const tot = done.map(r => (r.reconnect || r.healthy) - (r.t0 || r.fail)).filter(v => v >= 0);
+  const avg = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+  const ck = done.filter(r => r.ck >= 0), exact = ck.filter(r => r.ck === 0).length, fb = ck.filter(r => r.ck === 1).length, none = ck.filter(r => r.ck === 2).length;
+  const failed = d.svc.reduce((a, s) => a + s.failed, 0);
+  const missRec = d.rec.reduce((a, r) => a + r.miss, 0);
+  const minAvail = Math.min(...d.svc.filter(s => s.crit && s.avail != null).map(s => s.avail));
+  const M = [
+    ["Detection time", det.length ? ms(det[det.length - 1]) : "-", det.length ? `avg ${ms(avg(det))} · worst ${ms(Math.max(...det))}` : "no faults yet"],
+    ["Restoration time", tot.length ? ms(tot[tot.length - 1]) : "-", tot.length ? `avg ${ms(avg(tot))} · worst ${ms(Math.max(...tot))}` : "fault → healthy"],
+    ["Deadline misses", d.machine.misses, `critical 100 Hz loop · ${missRec} during recoveries`],
+    ["Lost requests", d.machine.lost, `${d.machine.ev_created} alarm events created · ${d.machine.ev_pending} in flight`],
+    ["Duplicates rejected", d.dm.ev_dup + d.dm.req_dup, `stale ${d.dm.req_stale} · invalid ${d.dm.req_invalid} · quarantined ${d.dm.req_quar}`],
+    ["Checkpoint accuracy", ck.length ? `${exact}/${ck.length}` : "-", `exact newest · ${fb} fallback · ${none} safe-init`],
+    ["Unsuccessful restarts", failed, `restarts that failed verification · ${d.rec_count} recoveries`],
+    ["Critical availability", isFinite(minAvail) ? fx(minAvail, 3) + " %" : "-", `supervisor takeovers ${d.sup.restarts} · no reboots`]];
+  $("metrics").innerHTML = M.map(([l, v, s]) => `<div class="metric"><div class="l">${l}</div><div class="v num">${esc(v)}</div><div class="s">${esc(s)}</div></div>`).join("");
+}
+
+const AL_NAME = { VIBRATION_DANGER: "Vibration danger (zone D)", OVER_TEMPERATURE: "Over-temperature", SENSOR_MOUNT_LOOSE: "Sensor mount loose" };
+const AL_UNIT = { VIBRATION_DANGER: " mm/s", OVER_TEMPERATURE: " °C", SENSOR_MOUNT_LOOSE: "° tilt" };
+function renderAlarms(d) {
+  const now = Date.now();
+  for (const a of d.alarms) {
+    const o = alarmSeen.get(a.id) || { first: now };
+    if (a.acked && !o.ackAt) o.ackAt = now;
+    alarmSeen.set(a.id, Object.assign(o, a, { inLog: true }));
+  }
+  const ids = new Set(d.alarms.map(a => a.id));
+  for (const [id, o] of alarmSeen) if (!ids.has(id)) o.inLog = false;
+  const list = [...alarmSeen.values()].sort((a, b) => b.id - a.id);
+  $("al-empty").style.display = list.length ? "none" : "block";
+  $("al-body").innerHTML = list.map(a => {
+    const t = new Date(a.wall).toLocaleTimeString([], { hour12: false });
+    const del = a.acked ? `<span class="pill"><span class="dot s-good"></span>ACKED (${a.tries} send${a.tries === 1 ? "" : "s"})</span>`
+      : !d.dm.centre ? `<span class="pill"><span class="dot s-warning"></span>queued (no centre, -e)</span>`
+      : `<span class="pill"><span class="dot s-serious"></span>sending, try ${a.tries}</span>`;
+    const extra = a.type === "VIBRATION_DANGER" ? ` @ ${fx(a.freq, 1)} Hz` : "";
+    return `<tr><td class="num">${a.id}</td><td class="num">${t}</td><td>${esc(AL_NAME[a.type] || a.type)}</td><td class="num">${fx(a.value, 2)}${AL_UNIT[a.type] || ""}${extra}</td><td class="num">${a.node}</td><td>${del}</td></tr>`;
+  }).join("");
+  $("al-sum").textContent = `${d.dm.ev_rx} stored · ${d.dm.acked} acked · ${d.dm.retries} resends · ${d.dm.pending} queued`;
+}
+
+function renderLog(d) {
+  const now = Date.now();
+  for (const e of d.log) if (!logSeen.has(e.seq)) logSeen.set(e.seq, Object.assign({ at: now + e.t }, e));
+  if (logSeen.size > 400) { const ks = [...logSeen.keys()].sort((a, b) => a - b); ks.slice(0, logSeen.size - 400).forEach(k => logSeen.delete(k)); }
+  const f = logFilter;
+  const rows = [...logSeen.values()].filter(e => f === "all" || (f === "supervisor" ? e.src === "supervisor" || /watchdog/i.test(e.text)
+      : f === "dm" ? e.src === "dm" : e.src !== "supervisor" && e.src !== "dm")).sort((a, b) => b.seq - a.seq).slice(0, 150);
+  const name = (s) => s === "supervisor" ? "Supervisor" : (d.svc.find(x => x.key === s) || {}).title || s;
+  $("log-body").innerHTML = rows.map(e => `<tr class="lv-${e.lvl}"><td class="num">${new Date(e.at).toLocaleTimeString([], { hour12: false })}</td><td>${esc(name(e.src))}</td><td class="wrap">${esc(e.text)}</td></tr>`).join("");
+}
+document.querySelectorAll("#logtabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#logtabs button").forEach(x => x.classList.toggle("on", x === b));
+  logFilter = b.dataset.f; if (last) renderLog(last);
+});
+
+function renderCkpt(d) {
+  $("ck-body").innerHTML = d.svc.filter(s => s.ck).map(s => {
+    const c = s.ck, rc = c.restore === "newest" ? "good" : c.restore === "fallback" ? "warning" : "critical";
+    const rtxt = c.restore === "none" ? (c.restored < 0 ? "none → safe-init" : "none") : `${c.restore} #${c.restored} slot ${c.rslot}`;
+    return `<tr><td>${esc(s.title)}</td><td>${c.valid ? `<span class="pill"><span class="dot s-good"></span>slot ${c.slot}</span>` : `<span class="pill"><span class="dot s-critical"></span>NO VALID COPY</span>`}</td>
+      <td class="num">${c.valid ? "#" + c.counter : "-"}</td><td class="num">${c.valid ? ms(c.age_ms) : "-"}</td><td class="num">${c.files}/2</td>
+      <td><span class="pill"><span class="dot s-${rc}"></span>${rtxt}</span></td></tr>`;
+  }).join("");
+}
+
+/* ---------- polling ---------- */
+function sample(d) {
+  const now = Date.now(), st = {};
+  clockOff = now - d.mono_ms;
+  for (const r of d.rec) recHist.set(r.id, r);
+  if (d.sup.fail_mono && d.sup.restarts) supHist.set(d.sup.restarts, { fail: d.sup.fail_mono, ms: d.sup.takeover_ms || 300 });
+  st.supervisor = d.sup.hb_age >= 0 && d.sup.hb_age < 300 ? "RUNNING" : "FAILED";
+  st.watchdog = d.wd.hb_age >= 0 && d.wd.hb_age < 500 ? "RUNNING" : "FAILED";
+  for (const s of d.svc) st[s.key] = s.state;
+  tl.push({ t: now, st });
+  if (d.machine.env_node >= 0 && d.machine.env_ok && d.machine.env_temp != null) tempHist.push([now, d.machine.env_temp]);
+  while (tl.length && now - tl[0].t > WINDOW + 5000) tl.shift();
+  while (tempHist.length && now - tempHist[0][0] > WINDOW + 5000) tempHist.shift();
+}
+function noData() { tl.push({ t: Date.now(), st: {} }); }
+
+function render(d) {
+  renderHeader(d); renderTiles(d); renderStatus(d); renderRecovery(d); renderMetrics(d);
+  renderAlarms(d); renderLog(d); renderCkpt(d);
+  drawVib(d); drawTemp(d); drawTimeline();
+  if (firstData) { fillSelects(d); firstData = false; }
+}
+function setLink(ok) {
+  if (ok === linkOk) return;
+  linkOk = ok;
+  $("linkbar").classList.toggle("on", !ok);
+  $("c-link").innerHTML = ok ? `<span class="dot s-good"></span><b>live</b>` : `<span class="dot s-critical"></span><b>link lost</b>`;
+}
+async function poll() {
+  try {
+    const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 1500);
+    const r = await fetch("/api/state", { cache: "no-store", signal: ctl.signal });
+    clearTimeout(to);
+    const d = await r.json();
+    last = d; setLink(true); sample(d); render(d);
+  } catch (e) {
+    setLink(false); noData(); if (last) drawTimeline();
+  }
+  setTimeout(poll, 500);
+}
+
+/* ---------- commands ---------- */
+function fillSelects(d) {
+  $("f-svc").innerHTML = d.svc.map(s => `<option value="${s.key}">${esc(s.title)}</option>`).join("");
+  $("k-svc").innerHTML = d.svc.filter(s => s.ck).map(s => `<option value="${s.key}" ${s.key === "dm" ? "selected" : ""}>${esc(s.title)}</option>`).join("");
+  const l = d.laptop ? `the maintenance laptop (${d.laptop})` : "the Pi only (start the supervisor with -e <laptop-ip>)";
+  $("cmd-who").textContent = `Commands are accepted from ${l}.`;
+}
+async function send(q, label) {
+  const res = $("result");
+  res.className = "result"; res.textContent = label + " …";
+  let ok = false, text = "";
+  try {
+    const r = await fetch("/api/action?" + q, { method: "POST" });
+    const j = await r.json(); ok = j.ok; text = j.text;
+  } catch (e) { text = "no answer (the web service may have been the target)"; }
+  res.className = "result " + (ok ? "ok" : "bad");
+  res.textContent = text;
+  const h = document.createElement("div");
+  h.textContent = `${new Date().toLocaleTimeString([], { hour12: false })}  ${label}: ${ok ? "ok" : "failed"}`;
+  $("hist").prepend(h);
+}
+document.querySelectorAll("[data-q]").forEach(b => b.onclick = () => send(b.dataset.q, b.querySelector("span:not(.n)")?.firstChild?.textContent?.trim() || b.textContent));
+document.querySelectorAll("[data-f]").forEach(b => { if (b.closest("#logtabs")) return;
+  b.onclick = () => { const s = $("f-svc").value; send(`do=${b.dataset.f}&svc=${s}`, `${b.textContent} ${s}`); }; });
+document.querySelectorAll("[data-k]").forEach(b => b.onclick = () => {
+  const s = $("k-svc").value, r = $("k-restart").checked ? "&restart=1" : "";
+  send(`do=ckpt&svc=${s}&op=${b.dataset.k}${r}`, `checkpoint ${b.dataset.k} ${s}${r ? " + restart" : ""}`);
+});
+document.querySelectorAll("#pagetabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#pagetabs button").forEach(x => x.classList.toggle("on", x === b));
+  document.body.className = "p-" + b.dataset.p;
+  try { localStorage.setItem("mg_page", b.dataset.p); } catch (e) {}
+  if (last) render(last);
+});
+document.querySelectorAll("#tlwin button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tlwin button").forEach(x => x.classList.toggle("on", x === b));
+  TL_WIN = +b.dataset.w; if (last) drawTimeline();
+});
+try { const pg = localStorage.getItem("mg_page"); if (pg) document.querySelector(`#pagetabs button[data-p="${pg}"]`)?.click(); } catch (e) {}
+window.addEventListener("resize", () => last && render(last));
+poll();
+</script>
+</body>
+</html>
